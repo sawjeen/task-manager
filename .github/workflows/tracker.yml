@@ -1,0 +1,47 @@
+name: GitHub Projects Automation
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  move-issue-to-done:
+    runs-on: ubuntu-latest
+    steps:
+      # Step 1: Checks out the repository
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Step 2: Only continue if the PR was merged (not just closed)
+      - name: Move linked issue to Done
+        if: github.event.pull_request.merged == true
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          OWNER: ${{ github.repository_owner }}
+          PROJECT_NUMBER: 1
+        run: |
+          # Find the issue number from "Closes #N" in the PR description
+          ISSUE=$(echo "$PR_BODY" | grep -oiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) #[0-9]+' | grep -oE '[0-9]+' | head -n1)
+          if [ -z "$ISSUE" ]; then
+            echo "No linked issue found in PR description"
+            exit 0
+          fi
+          echo "Linked issue: #$ISSUE"
+
+          # Look up the project, its Status field and the Done option
+          PROJECT_ID=$(gh project view "$PROJECT_NUMBER" --owner "$OWNER" --format json --jq '.id')
+          FIELDS=$(gh project field-list "$PROJECT_NUMBER" --owner "$OWNER" --format json)
+          FIELD_ID=$(echo "$FIELDS" | jq -r '.fields[] | select(.name=="Status") | .id')
+          DONE_ID=$(echo "$FIELDS" | jq -r '.fields[] | select(.name=="Status") | .options[] | select(.name=="Done") | .id')
+
+          # Find the issue's card on the board
+          ITEM_ID=$(gh project item-list "$PROJECT_NUMBER" --owner "$OWNER" --format json --limit 100 --jq ".items[] | select(.content.number==$ISSUE) | .id")
+          if [ -z "$ITEM_ID" ]; then
+            echo "Issue #$ISSUE is not on the project board"
+            exit 1
+          fi
+
+          # Move it to Done
+          gh project item-edit --id "$ITEM_ID" --project-id "$PROJECT_ID" --field-id "$FIELD_ID" --single-select-option-id "$DONE_ID"
+          echo "Moved issue #$ISSUE to Done"
